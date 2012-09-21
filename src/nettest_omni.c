@@ -436,6 +436,7 @@ int         check_interval = 0;
 int         intermediate_output = 0;
 double	    last_int_out = 0;
 uint64_t    last_int_bytes = 0;
+int	file_out;
 
 int         receive_timeout = -1;
 
@@ -4346,7 +4347,10 @@ send_omni_inner(char remote_host[], unsigned int legacy_caller, char header_str[
 			double now = (double)tv.tv_sec + (double) tv.tv_usec / 1000000;
 			double diff = now - last_int_out;
 			if (diff >= intermediate_output) {
-				printf("%f\n", calc_thruput_interval(last_int_bytes, diff));
+				char buf[10];
+				int to_write = sprintf(buf, "%f\n", calc_thruput_interval(last_int_bytes, diff));
+				write(file_out, buf, to_write);
+				fsync(file_out);
 				last_int_out = now;
 				last_int_bytes = 0;
 			}
@@ -7176,7 +7180,7 @@ scan_omni_args(int argc, char *argv[])
 
 {
 
-#define OMNI_ARGS "b:cCd:De:FG:hH:i:IkK:l:L:m:M:nNoOp:P:r:R:s:S:t:T:u:Vw:W:46"
+#define OMNI_ARGS "b:cCd:De:FG:hH:i:IkK:l:L:m:M:nNoOp:P:r:R:s:S:t:T:u:Vw:W:46j:"
 
   extern char	*optarg;	  /* pointer to option string	*/
 
@@ -7311,6 +7315,7 @@ scan_omni_args(int argc, char *argv[])
       break;
     case 'j':
       intermediate_output = atoi(optarg);
+      file_out = open("/tmp/10gig", O_CREAT|O_TRUNC|O_RDWR);
     case 'k':
       netperf_output_mode = KEYVAL;
       legacy = 0;
