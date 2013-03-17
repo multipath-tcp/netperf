@@ -2,6 +2,8 @@
 #include <config.h>
 #endif
 
+#include <sys/time.h>
+
 #ifdef WANT_OMNI
 char nettest_omni_id[]="\
 @(#)nettest_omni.c (c) Copyright 2008-2012 Hewlett-Packard Co. Version 2.6.0";
@@ -431,6 +433,10 @@ char        local_cong_control_req[16] = "";
 char        remote_cong_control_req[16] = "";
 
 int         check_interval = 0;
+int         intermediate_output = 0;
+double	    last_int_out = 0;
+uint64_t    last_int_bytes = 0;
+
 int         receive_timeout = -1;
 
 /* new statistics based on code diffs from Google, with raj's own
@@ -4302,6 +4308,15 @@ send_omni_inner(char remote_host[], unsigned int legacy_caller, char header_str[
 	 try to send something. */
       if (direction & NETPERF_XMIT) {
 
+        if (intermediate_output > 0 && last_int_out == 0.0) {
+		struct timeval tv;
+		gettimeofday(&tv, NULL);
+
+		last_int_out = tv.tv_sec;
+		last_int_out += (tv.tv_usec / 1000000);
+		last_int_bytes = 0;
+        }
+
 	ret = send_data(data_socket,
 			send_ring, sendfile_ring,
 			bytes_to_send,
@@ -4321,6 +4336,22 @@ send_omni_inner(char remote_host[], unsigned int legacy_caller, char header_str[
 	  bytes_sent += ret;
 	  send_ring = send_ring->next;
 	  local_send_calls++;
+          last_int_bytes += ret;
+
+          if (intermediate_output > 0) {
+		struct timeval tv;
+		gettimeofday(&tv, NULL);
+
+		if ((double)tv.tv_sec - last_int_out >= intermediate_output) {
+			double now = (double)tv.tv_sec + (double) tv.tv_usec / 1000000;
+			double diff = now - last_int_out;
+			if (diff >= intermediate_output) {
+				printf("%f\n", calc_thruput_interval(last_int_bytes, diff));
+				last_int_out = now;
+				last_int_bytes = 0;
+			}
+		}
+	  }
 	}
 	else if (ret == -2) {
 	  /* what to do here -2 means a non-fatal error - probably
@@ -7278,6 +7309,8 @@ scan_omni_args(int argc, char *argv[])
     case 'I':
       use_write = 1;
       break;
+    case 'j':
+      intermediate_output = atoi(optarg);
     case 'k':
       netperf_output_mode = KEYVAL;
       legacy = 0;
