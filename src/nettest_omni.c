@@ -2841,10 +2841,47 @@ connect_data_socket(SOCKET send_socket, struct addrinfo *remote_res)
   return 0;
 }
 
-int
-send_data(SOCKET data_socket, struct ring_elt *send_ring, uint32_t bytes_to_send, struct sockaddr *destination, int destlen, int protocol) {
+#if defined(__linux)
+static int
+send_data_no_copy(SOCKET data_socket, struct sendfile_ring_elt *sendfile_ring,
+				  uint32_t bytes_to_send, struct sockaddr *destination,
+				  int destlen) {
+	off_t scratch_offset;
+	int len;
 
+	scratch_offset = sendfile_ring->offset;
+	if ((len = sendfile(data_socket, sendfile_ring->fildes, &scratch_offset,
+						bytes_to_send)) != bytes_to_send) {
+		if ((len >=0) || SOCKET_EINTR(len)) {
+			return len;
+		}
+		perror("netperf: data send error: sendfile");
+		fprintf(stderr, "len was %d send_size was %d\n", len, bytes_to_send);
+		fflush(stderr);
+		exit(1);
+	}
+
+	return len;
+}
+#endif
+
+int
+send_data(SOCKET data_socket, struct ring_elt *send_ring,
+		  struct sendfile_ring_elt *sendfile_ring, uint32_t bytes_to_send,
+		  struct sockaddr *destination, int destlen, int protocol)
+{
   int len;
+
+#if defined(__linux)
+  int ret;
+  if (loc_sndavoid == 1) {
+    ret = send_data_no_copy(data_socket, sendfile_ring, bytes_to_send, destination, destlen);
+    if (ret != -EINTR)
+      return ret;
+    else
+      loc_sndavoid = 0;
+  }
+#endif
 
   /* if the user has supplied a destination, we use sendto, otherwise
      we use send.  we ass-u-me blocking operations always, so no need
@@ -3561,6 +3598,7 @@ send_omni_inner(char remote_host[], unsigned int legacy_caller, char header_str[
   int pad_time = 0;
 
   struct ring_elt *send_ring;
+  struct sendfile_ring_elt *sendfile_ring;
   struct ring_elt *recv_ring;
 
   struct sockaddr_storage remote_addr;
@@ -3683,6 +3721,7 @@ send_omni_inner(char remote_host[], unsigned int legacy_caller, char header_str[
   init_stat();
 
   send_ring = NULL;
+  sendfile_ring = NULL;
   recv_ring = NULL;
 
   /* you will keep running the test until you get it right! :) */
@@ -3771,6 +3810,10 @@ send_omni_inner(char remote_host[], unsigned int legacy_caller, char header_str[
 					 bytes_to_send,
 					 local_send_align,
 					 local_send_offset);
+
+	sendfile_ring = alloc_sendfile_buf_ring(send_width, bytes_to_send,
+											local_send_align,
+											local_send_offset);
 	if (debug) {
 	  fprintf(where,
 		  "%s: %d entry send_ring obtained...\n",
@@ -4218,7 +4261,7 @@ send_omni_inner(char remote_host[], unsigned int legacy_caller, char header_str[
 	}
 
 	if ((ret = send_data(data_socket,
-			     send_ring,
+			     send_ring, sendfile_ring,
 			     bytes_to_send,
 			     (connected) ? NULL : remote_res->ai_addr,
 			     remote_res->ai_addrlen,
@@ -4250,7 +4293,7 @@ send_omni_inner(char remote_host[], unsigned int legacy_caller, char header_str[
       if (direction & NETPERF_XMIT) {
 
 	ret = send_data(data_socket,
-			send_ring,
+			send_ring, sendfile_ring,
 			bytes_to_send,
 			(connected) ? NULL : remote_res->ai_addr,
 			/* if the destination above is NULL, this is ignored */
@@ -5037,6 +5080,7 @@ recv_omni()
   netperf_socklen_t 	addrlen;
 
   struct ring_elt *send_ring;
+  struct sendfile_ring_elt *sendfile_ring;
   struct ring_elt *recv_ring;
 
   int	timed_out = 0;
@@ -5222,10 +5266,16 @@ recv_omni()
       else
 	send_width = omni_request->send_width;
     }
+
+
     send_ring = allocate_buffer_ring(send_width,
-				     bytes_to_send,
-				     omni_request->send_alignment,
-				     omni_request->send_offset);
+                                    bytes_to_send,
+                                    omni_request->send_alignment,
+                                    omni_request->send_offset);
+
+    sendfile_ring = alloc_sendfile_buf_ring(send_width, bytes_to_send,
+                                            omni_request->send_alignment,
+                                            omni_request->send_offset);
 
     omni_response->send_width = send_width;
     omni_response->send_size = bytes_to_send;
@@ -5602,7 +5652,7 @@ recv_omni()
       }
 
       ret = send_data(data_socket,
-		      send_ring,
+		      send_ring, sendfile_ring,
 		      bytes_to_send,
 		      (connected) ? NULL : (struct sockaddr *)&peeraddr_in,
 		      addrlen,
